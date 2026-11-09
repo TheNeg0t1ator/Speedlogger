@@ -122,6 +122,11 @@
     input::placeholder { color: var(--muted); opacity: .7; }
     input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
     .row { display: flex; gap: 8px; margin-top: 14px; }
+    label.check { display: block; }
+    label.check input { width: auto; margin: 0 6px 0 0; vertical-align: -2px; accent-color: var(--accent); }
+    .inline { display: flex; gap: 8px; align-items: center; }
+    .inline input { flex: 1; }
+    .inline .btn { margin-top: 5px; padding: 8px 12px; }
 
     table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
     th { text-align: left; font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px; background: var(--surface-2); }
@@ -210,9 +215,15 @@
         <small>Each test uses data; 30+ recommended</small>
         <input id="interval" type="number" min="1" value="30">
       </label>
-      <label>Router address <span class="count">(optional)</span>
-        <small>Pings your router during the test to tell home-network problems from ISP problems. Usually 192.168.1.1 or 192.168.0.1</small>
-        <input id="router-url" placeholder="192.168.1.1">
+      <label class="check"><input type="checkbox" id="router-on" checked> Check my router during the test
+        <small>Pings the router while the line is loaded to tell home-network problems from ISP problems</small>
+      </label>
+      <label>Router address
+        <small id="router-found">Leave empty to auto-detect</small>
+        <span class="inline">
+          <input id="router-url" placeholder="Auto-detect (e.g. 192.168.1.1)">
+          <button type="button" class="btn sm" id="detect">Detect</button>
+        </span>
       </label>
       <label>Google Sheet webhook URL <span class="count">(optional)</span>
         <input id="webhook" placeholder="https://script.google.com/macros/s/…/exec">

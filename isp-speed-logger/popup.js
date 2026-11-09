@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerUrl: '' };
+const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '' };
 
 // ---------- theme ----------
 const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -27,8 +27,17 @@ async function loadSettings() {
   $('label').value = settings.label;
   $('interval').value = settings.intervalMin;
   $('router-url').value = settings.routerUrl;
+  $('router-on').checked = settings.routerOn !== false;
+  showDetected();
   $('webhook').value = settings.webhookUrl;
   $('token').value = settings.token;
+}
+
+async function showDetected() {
+  const { routerCache } = await chrome.storage.local.get('routerCache');
+  $('router-found').textContent = routerCache?.url
+    ? `Auto-detected: ${new URL(routerCache.url).hostname} (leave empty to keep auto-detecting)`
+    : 'Leave empty to auto-detect';
 }
 
 function normalizeRouterUrl(u) {
@@ -62,20 +71,21 @@ const txt = (t) => document.createTextNode(t);
 
 function renderRouterIdle(last) {
   if (!last || last.routerStatus === 'off' || last.routerStatus == null) {
-    const hasUrl = !!normalizeRouterUrl(settings.routerUrl);
-    setRouter('Router off', '', [txt(hasUrl ? 'Run a test to measure' : 'Add your router address in Settings to check the home network')]);
+    setRouter(settings.routerOn === false ? 'Router off' : 'Router', '', [txt(settings.routerOn === false
+      ? 'Turn on router checks in Settings'
+      : 'Run a test: the router is auto-detected and pinged during the test')]);
     return;
   }
   switch (last.routerStatus) {
-    case 'no permission':
-      setRouter('Needs access', 'degraded', [txt('Open Settings and press Save to allow access to the router')]);
-      break;
     case 'unreachable':
-      setRouter('Unreachable', 'unreachable', [txt('Router did not answer; check the address in Settings')]);
+      setRouter('Unreachable', 'unreachable', [txt(`${last.routerAddr || 'Router'} did not answer; it will be re-detected next run`)]);
+      break;
+    case 'not found':
+      setRouter('Not found', 'degraded', [txt('No router answered on the usual addresses; enter its address in Settings')]);
       break;
     default:
-      setRouter(last.routerStatus === 'ok' ? 'Home network OK' : 'Home network slow', last.routerStatus, [
-        txt('Router ping idle '), bold(`${fmt(last.routerIdle, 0)} ms`),
+      setRouter(last.routerStatus === 'ok' ? 'Router OK under load' : 'Router slow under load', last.routerStatus, [
+        txt(`${last.routerAddr ? last.routerAddr + ' · ' : ''}ping idle `), bold(`${fmt(last.routerIdle, 0)} ms`),
         txt(' · loaded '), bold(`${fmt(last.routerDown, 0)}/${fmt(last.routerUp, 0)} ms`),
         txt(` · loss ${fmt(last.routerLoss, 0)}%`),
       ]);
@@ -140,7 +150,7 @@ function renderStats(running, p) {
         ? [txt('Router not answering…')]
         : [txt('Router ping '), bold(`${p.router.toFixed(0)} ms`), txt(` ${phase}`)]);
     } else {
-      setRouter('Router off', '', [txt('Add your router address in Settings to check the home network')]);
+      setRouter(p?.detecting ? 'Detecting' : 'Router off', '', [txt(p?.detecting ? 'Looking for your router…' : 'Router checks are off or no router was found')]);
     }
   } else {
     renderRouterIdle(lastLog[lastLog.length - 1]);
@@ -189,10 +199,10 @@ async function render() {
 
 function toCsv(log) {
   const header = ['Time', 'Name', 'IP', 'Server', 'Down (Mbps)', 'Up (Mbps)', 'Ping (ms)', 'Status',
-    'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status'];
+    'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status', 'Router address'];
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = log.map((r) => [r.time, r.label, r.ip, r.server, r.down, r.up, r.ping, r.status,
-    r.routerIdle, r.routerDown, r.routerUp, r.routerMax, r.routerLoss, r.routerStatus].map(esc).join(','));
+    r.routerIdle, r.routerDown, r.routerUp, r.routerMax, r.routerLoss, r.routerStatus, r.routerAddr].map(esc).join(','));
   return [header.map(esc).join(','), ...lines].join('\n');
 }
 
@@ -204,29 +214,27 @@ function flash(msg) {
 // ---------- actions ----------
 $('save').onclick = async () => {
   const routerUrl = normalizeRouterUrl($('router-url').value);
+  const routerOn = $('router-on').checked;
   settings = {
     label: $('label').value.trim(),
     intervalMin: Math.max(1, Number($('interval').value) || 30),
     webhookUrl: $('webhook').value.trim(),
     token: $('token').value.trim(),
+    routerOn,
     routerUrl,
   };
   await chrome.storage.local.set({ settings });
   flash('Settings saved.');
+};
 
-  // The router lives on a private address, so Chrome needs the user's OK to let the extension reach it.
-  if (routerUrl) {
-    try {
-      const origin = new URL(routerUrl).origin + '/*';
-      const has = await chrome.permissions.contains({ origins: [origin] });
-      if (!has) {
-        const ok = await chrome.permissions.request({ origins: [origin] });
-        flash(ok ? 'Saved. Router access granted.' : 'Saved, but router access was not granted.');
-      }
-    } catch (_) {
-      flash('Saved, but the router address looks invalid.');
-    }
-  }
+$('detect').onclick = async () => {
+  const b = $('detect');
+  b.disabled = true; b.textContent = 'Detecting…';
+  const res = await chrome.runtime.sendMessage({ type: 'detectRouter' });
+  b.disabled = false; b.textContent = 'Detect';
+  $('router-found').textContent = res?.url
+    ? `Found: ${new URL(res.url).hostname}`
+    : 'No router found on the usual addresses; type its address instead';
 };
 
 $('run').onclick = () => {

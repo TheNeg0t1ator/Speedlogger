@@ -6,7 +6,14 @@ const SERVERS = [
   { name: 'Frankfurt, DE (Clouvider)', base: 'https://fra.speedtest.clouvider.net/backend', down: 'garbage.php', up: 'empty.php', ping: 'empty.php', ip: 'getIP.php' },
 ];
 const MAX_LOG = 5000;      // max rows kept locally
-const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerUrl: '' };
+const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '' };
+
+// Common default-gateway addresses, in priority order, probed to auto-detect the router.
+const ROUTER_CANDIDATES = [
+  '192.168.0.1', '192.168.1.1', '192.168.1.254', '192.168.0.254', '10.0.0.1', '192.168.2.1', '10.0.1.1',
+  '192.168.10.1', '192.168.100.1', '192.168.178.1', '192.168.8.1', '192.168.50.1', '192.168.88.1',
+  '192.168.3.1', '192.168.15.1', '192.168.123.1', '10.10.10.1', '172.16.0.1',
+];
 
 // Overall progress bar layout (percent of the bar each phase fills)
 const PHASES = {
@@ -40,6 +47,10 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'speedtest') runTest()
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'runNow') {
     runTest().then(() => sendResponse({ done: true }));
+    return true;
+  }
+  if (msg.type === 'detectRouter') {
+    detectRouter(true).then((url) => sendResponse({ url }));
     return true;
   }
 });
@@ -206,20 +217,14 @@ function normalizeRouterUrl(u) {
   return u;
 }
 
-async function routerAllowed(url) {
-  try {
-    const origin = new URL(url).origin + '/*';
-    return await chrome.permissions.contains({ origins: [origin] });
-  } catch (_) { return false; }
-}
-
 async function routerProbe(url, timeoutMs = 2000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const t0 = performance.now();
   try {
     const sep = url.includes('?') ? '&' : '?';
-    const r = await fetch(`${url}${sep}r=${Math.random()}`, { cache: 'no-store', signal: ctrl.signal });
+    // no-cors: we only need the timing, not the (opaque) response, so no host permission is required
+    const r = await fetch(`${url}${sep}r=${Math.random()}`, { cache: 'no-store', mode: 'no-cors', signal: ctrl.signal });
     const ms = performance.now() - t0; // time until response headers
     try { await r.body?.cancel(); } catch (_) { /* ignore */ }
     return ms;
@@ -228,6 +233,26 @@ async function routerProbe(url, timeoutMs = 2000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Find the router by probing the usual gateway addresses in parallel. Chrome extensions cannot read
+// the OS routing table, so this is a heuristic: the first candidate (in priority order) that answers
+// an HTTP request wins. The result is cached; it is cleared when the router stops answering.
+async function detectRouter(force = false) {
+  if (!force) {
+    const { routerCache } = await chrome.storage.local.get('routerCache');
+    if (routerCache?.url) return routerCache.url;
+  }
+  const probes = ROUTER_CANDIDATES.map((ip) => routerProbe(`http://${ip}/`, 1500));
+  for (let i = 0; i < probes.length; i++) {
+    if ((await probes[i]) !== null) {
+      const url = `http://${ROUTER_CANDIDATES[i]}/`;
+      await chrome.storage.local.set({ routerCache: { url, at: Date.now() } });
+      return url;
+    }
+  }
+  await chrome.storage.local.remove('routerCache');
+  return '';
 }
 
 function startRouterMonitor(url) {
@@ -314,7 +339,7 @@ async function runTest() {
   const row = {
     time: new Date().toISOString(), label: s.label, ip: '', server: '',
     down: null, up: null, ping: null, status: 'ok',
-    routerIdle: null, routerDown: null, routerUp: null, routerMax: null, routerLoss: null, routerStatus: 'off',
+    routerIdle: null, routerDown: null, routerUp: null, routerMax: null, routerLoss: null, routerStatus: 'off', routerAddr: '',
   };
 
   // Build the upload payload up front: generating 25 MB of random data stalls the worker for a moment,
@@ -322,13 +347,20 @@ async function runTest() {
   const uploadBuf = randomBuffer(UP_MAX);
 
   // Start the router monitor first so it samples the idle baseline, then runs alongside the WAN test.
-  const routerUrl = normalizeRouterUrl(s.routerUrl);
+  let routerUrl = '';
   let monitor = null;
-  if (routerUrl) {
-    if (await routerAllowed(routerUrl)) monitor = startRouterMonitor(routerUrl);
-    else row.routerStatus = 'no permission';
+  const manualRouter = normalizeRouterUrl(s.routerUrl);
+  if (s.routerOn !== false) {
+    push({ phase: 'prepare', pct: 3, detecting: !manualRouter }, true);
+    routerUrl = manualRouter || await detectRouter();
+    if (routerUrl) {
+      monitor = startRouterMonitor(routerUrl);
+      row.routerAddr = new URL(routerUrl).hostname;
+    } else {
+      row.routerStatus = 'not found';
+    }
   }
-  push({ routerEnabled: !!monitor, routerUrl: monitor ? routerUrl : '' }, true);
+  push({ routerEnabled: !!monitor, routerUrl: monitor ? routerUrl : '', detecting: false }, true);
 
   try {
     push({ phase: 'prepare', pct: 4 }, true);
@@ -349,7 +381,11 @@ async function runTest() {
     row.status = 'error: ' + (e.message || e);
   }
   clearInterval(keepAlive);
-  if (monitor) Object.assign(row, await monitor.finish());
+  if (monitor) {
+    Object.assign(row, await monitor.finish());
+    // An auto-detected router that no longer answers (e.g. you changed network): forget it and re-detect next run.
+    if (row.routerStatus === 'unreachable' && !manualRouter) await chrome.storage.local.remove('routerCache');
+  }
 
   const { log = [], pending = [] } = await chrome.storage.local.get(['log', 'pending']);
   log.push(row);
