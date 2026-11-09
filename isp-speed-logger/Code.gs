@@ -4,7 +4,9 @@ const TOKEN = 'seppe';                      // must match "Shared secret token" 
 const SHEET_NAME = 'Speed Log';
 const SHEET_ID = '1Gwpp_kJj3QocAj1gHwfA7NgXte6CRPwE97uG8Jy90D4'; // fallback if script is not bound to the sheet
 const HEADERS = ['Time', 'Name', 'IP', 'Server', 'Down (Mbps)', 'Up (Mbps)', 'Ping (ms)', 'Status',
-  'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status'];
+  'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status',
+  // Added later: new columns go at the end so rows logged before the update keep their alignment.
+  'Router address', 'Router loaded LAN (ms)', 'LAN down (Mbps)', 'LAN up (Mbps)', 'LAN ping (ms)', 'LAN status', 'LAN server'];
  
 // Pivot sheets used by the charts: [sheet name, column index in "Speed Log" (0-based), chart title]
 const METRICS = [
@@ -31,7 +33,8 @@ function doPost(e) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.setFrozenRows(1);
     sheet.appendRow([new Date(d.time), d.label, d.ip, d.server, d.down, d.up, d.ping, d.status,
-      d.routerIdle, d.routerDown, d.routerUp, d.routerMax, d.routerLoss, d.routerStatus]);
+      d.routerIdle, d.routerDown, d.routerUp, d.routerMax, d.routerLoss, d.routerStatus,
+      d.routerAddr, d.routerLan, d.lanDown, d.lanUp, d.lanPing, d.lanStatus, d.lanServer].map((v) => (v === undefined ? '' : v)));
     sheet.getRange('A:A').setNumberFormat('yyyy-mm-dd hh:mm:ss');
     try { rebuildPivots(); } catch (err) { console.error('pivot rebuild failed: ' + err); } // never block logging
     return out({ ok: true });
