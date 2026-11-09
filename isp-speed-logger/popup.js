@@ -148,7 +148,7 @@ function renderStats(running, p) {
 }
 
 async function render() {
-  const { log = [], running, pending = [] } = await chrome.storage.local.get(['log', 'running', 'pending']);
+  const { log = [], running, pending = [], lastError } = await chrome.storage.local.get(['log', 'running', 'pending', 'lastError']);
   const { progress } = await chrome.storage.session.get('progress').catch(() => ({}));
   lastLog = log; lastRunning = !!running; lastProgress = progress || null;
 
@@ -183,7 +183,7 @@ async function render() {
   const st = $('status');
   st.textContent = '';
   if (!lastRunning && pending.length) {
-    st.textContent = `${pending.length} result${pending.length > 1 ? 's' : ''} waiting to upload to the sheet`;
+    st.textContent = `${pending.length} result${pending.length > 1 ? 's' : ''} waiting to upload to the sheet` + (lastError ? ` (${lastError})` : '');
   }
 }
 
@@ -213,6 +213,7 @@ $('save').onclick = async () => {
   };
   await chrome.storage.local.set({ settings });
   flash('Settings saved.');
+  chrome.runtime.sendMessage({ type: 'flush' }); // retry queued uploads right away
 
   // The router lives on a private address, so Chrome needs the user's OK to let the extension reach it.
   if (routerUrl) {
