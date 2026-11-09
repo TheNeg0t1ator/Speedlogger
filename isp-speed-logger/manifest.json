@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ISP Speed Logger",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Runs a speed test on a schedule and logs the results to CSV and/or a shared Google Sheet.",
   "permissions": ["alarms", "storage"],
   "host_permissions": [
@@ -10,6 +10,7 @@
     "https://script.google.com/*",
     "https://script.googleusercontent.com/*"
   ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "background.js" },
   "action": { "default_popup": "popup.html", "default_title": "ISP Speed Logger" }
 }
