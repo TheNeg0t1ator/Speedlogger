@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px system-ui, sans-serif; width: 420px; margin: 12px; color: #222; }
+    h3 { margin: 0 0 8px; }
+    label { display: block; margin-top: 8px; font-weight: 600; }
+    input { width: 100%; box-sizing: border-box; padding: 5px; margin-top: 2px; }
+    .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    button { padding: 6px 10px; cursor: pointer; }
+    #status { margin-top: 8px; color: #555; min-height: 1em; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 11px; }
+    th, td { border-bottom: 1px solid #ddd; padding: 3px 4px; text-align: left; }
+    small { color: #777; }
+  </style>
+</head>
+<body>
+  <h3>ISP Speed Logger</h3>
+
+  <label>Your name / location label <small>(shows up in the shared sheet)</small>
+    <input id="label" placeholder="e.g. John - living room">
+  </label>
+  <label>Test every (minutes) <small>(each test uses data, 30+ recommended)</small>
+    <input id="interval" type="number" min="1" value="30">
+  </label>
+  <label>Google Sheet webhook URL <small>(optional)</small>
+    <input id="webhook" placeholder="https://script.google.com/macros/s/.../exec">
+  </label>
+  <label>Shared secret token <small>(must match the Apps Script)</small>
+    <input id="token">
+  </label>
+
+  <div class="row">
+    <button id="save">Save</button>
+    <button id="run">Run test now</button>
+    <button id="csv">Export CSV</button>
+    <button id="clear">Clear local log</button>
+  </div>
+  <div id="status"></div>
+
+  <table>
+    <thead><tr><th>Time</th><th>Down</th><th>Up</th><th>Ping</th><th>Server</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script src="popup.js"></script>
+</body>
+</html>
