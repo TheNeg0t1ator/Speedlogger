@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '' };
+const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '', lanUrl: '' };
 
 // ---------- theme ----------
 const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -28,6 +28,7 @@ async function loadSettings() {
   $('interval').value = settings.intervalMin;
   $('router-url').value = settings.routerUrl;
   $('router-on').checked = settings.routerOn !== false;
+  $('lan-url').value = settings.lanUrl;
   showDetected();
   $('webhook').value = settings.webhookUrl;
   $('token').value = settings.token;
@@ -92,8 +93,39 @@ function renderRouterIdle(last) {
   }
 }
 
+function setLan(badgeText, badgeClass, nodes) {
+  const row = $('lan');
+  row.hidden = false;
+  const b = $('l-badge');
+  b.textContent = badgeText;
+  b.className = 'badge ' + (badgeClass || '');
+  const d = $('l-detail');
+  d.textContent = '';
+  d.append(...nodes);
+}
+
+function renderLanIdle(last) {
+  if (!last || last.lanStatus === 'off' || last.lanStatus == null) {
+    if (!settings.lanUrl) { $('lan').hidden = true; return; }
+    setLan('LAN', '', [txt('Run a test to measure speed to your LAN test server')]);
+    return;
+  }
+  if (last.lanStatus === 'unreachable') {
+    setLan('Unreachable', 'unreachable', [txt(`No answer from ${last.lanServer}. Start lan-server/server.js on that device`)]);
+    return;
+  }
+  // The home network is the bottleneck if it carries less than the internet connection delivered.
+  const limiting = (last.status === 'ok') && ((last.lanDown ?? Infinity) < last.down || (last.lanUp ?? Infinity) < last.up);
+  setLan(limiting ? 'LAN is the bottleneck' : 'LAN not limiting', limiting ? 'degraded' : 'ok', [
+    txt('↓ '), bold(fmt(last.lanDown, 0)), txt('  ↑ '), bold(fmt(last.lanUp, 0)), txt(' Mbps · '),
+    bold(`${fmt(last.lanPing, 0)} ms`), txt(` · ${last.lanServer}`),
+  ]);
+}
+
 const PHASE_LABEL = {
   prepare: 'Finding server & measuring latency',
+  'lan-download': 'Measuring LAN download',
+  'lan-upload': 'Measuring LAN upload',
   download: 'Measuring download',
   upload: 'Measuring upload',
 };
@@ -108,14 +140,16 @@ function renderProgress(p, running) {
 
   $('p-fill').style.width = `${Math.max(2, Math.min(100, p.pct || 0))}%`;
   $('p-fill').parentElement.setAttribute('aria-valuenow', Math.round(p.pct || 0));
-  const live = p.live != null && (p.phase === 'download' || p.phase === 'upload') ? ` · ${p.live.toFixed(1)} Mbps` : '';
+  const live = p.live != null && p.phase !== 'prepare' ? ` · ${p.live.toFixed(1)} Mbps` : '';
   $('p-label').textContent = (PHASE_LABEL[p.phase] || 'Testing') + live;
   $('p-time').textContent = p.phaseTotalMs && p.phase !== 'prepare'
     ? `${(p.phaseMs / 1000).toFixed(1)} / ${(p.phaseTotalMs / 1000).toFixed(0)} s`
     : `${Math.round(p.pct || 0)}%`;
 
-  const order = ['prepare', 'download', 'upload'];
-  const idx = order.indexOf(p.phase);
+  const order = ['prepare', 'lan', 'download', 'upload'];
+  const cur = p.phase.startsWith('lan-') ? 'lan' : p.phase;
+  const idx = order.indexOf(cur);
+  $('st-lan').hidden = !p.lanEnabled;
   order.forEach((name, i) => {
     const el = $('st-' + name);
     el.className = i < idx ? 'done' : i === idx ? 'on' : '';
@@ -145,7 +179,7 @@ function renderStats(running, p) {
   }
   if (running) {
     if (p?.routerEnabled) {
-      const phase = p.routerPhase === 'idle' ? 'idle' : p.routerPhase === 'download' ? 'during download' : 'during upload';
+      const phase = { idle: 'idle', lan: 'during LAN test', download: 'during download' }[p.routerPhase] || 'during upload';
       setRouter('Testing', '', p.router == null
         ? [txt('Router not answering…')]
         : [txt('Router ping '), bold(`${p.router.toFixed(0)} ms`), txt(` ${phase}`)]);
@@ -154,6 +188,14 @@ function renderStats(running, p) {
     }
   } else {
     renderRouterIdle(lastLog[lastLog.length - 1]);
+  }
+  if (running && p?.lanEnabled) {
+    setLan(p.lanFailed ? 'Unreachable' : 'Testing', p.lanFailed ? 'unreachable' : '', p.lanFailed
+      ? [txt('LAN test server did not answer')]
+      : [txt('↓ '), bold(fmt(p.lanDown, 0)), txt('  ↑ '), bold(fmt(p.lanUp, 0)), txt(' Mbps'),
+         p.lanPing != null ? txt(` · ${fmt(p.lanPing, 0)} ms`) : txt('')]);
+  } else if (!running) {
+    renderLanIdle(lastLog[lastLog.length - 1]);
   }
 }
 
@@ -179,8 +221,10 @@ async function render() {
         ? `${fmt(r.routerIdle, 0)} → ${fmt(Math.max(r.routerDown ?? 0, r.routerUp ?? 0), 0)} ms`
         : r.routerStatus === 'unreachable' ? 'no reply' : '–';
       tr.appendChild(cell(routerCell, r.routerStatus === 'degraded' ? 'num-ping' : r.routerStatus === 'unreachable' ? 'err' : ''));
+      tr.appendChild(cell(r.lanStatus === 'ok' ? `${fmt(r.lanDown, 0)} / ${fmt(r.lanUp, 0)}` : r.lanStatus === 'unreachable' ? 'no reply' : '–',
+        r.lanStatus === 'unreachable' ? 'err' : ''));
     } else {
-      tr.appendChild(cell(r.status, 'err', 4));
+      tr.appendChild(cell(r.status, 'err', 5));
     }
     tbody.appendChild(tr);
   });
@@ -199,10 +243,12 @@ async function render() {
 
 function toCsv(log) {
   const header = ['Time', 'Name', 'IP', 'Server', 'Down (Mbps)', 'Up (Mbps)', 'Ping (ms)', 'Status',
-    'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status', 'Router address'];
+    'Router idle (ms)', 'Router loaded down (ms)', 'Router loaded up (ms)', 'Router max (ms)', 'Router loss (%)', 'Router status', 'Router address', 'Router loaded LAN (ms)',
+    'LAN down (Mbps)', 'LAN up (Mbps)', 'LAN ping (ms)', 'LAN status', 'LAN server'];
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = log.map((r) => [r.time, r.label, r.ip, r.server, r.down, r.up, r.ping, r.status,
-    r.routerIdle, r.routerDown, r.routerUp, r.routerMax, r.routerLoss, r.routerStatus, r.routerAddr].map(esc).join(','));
+    r.routerIdle, r.routerDown, r.routerUp, r.routerMax, r.routerLoss, r.routerStatus, r.routerAddr, r.routerLan,
+    r.lanDown, r.lanUp, r.lanPing, r.lanStatus, r.lanServer].map(esc).join(','));
   return [header.map(esc).join(','), ...lines].join('\n');
 }
 
@@ -222,6 +268,7 @@ $('save').onclick = async () => {
     token: $('token').value.trim(),
     routerOn,
     routerUrl,
+    lanUrl: $('lan-url').value.trim(),
   };
   await chrome.storage.local.set({ settings });
   flash('Settings saved.');

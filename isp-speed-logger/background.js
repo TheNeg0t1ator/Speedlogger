@@ -6,7 +6,7 @@ const SERVERS = [
   { name: 'Frankfurt, DE (Clouvider)', base: 'https://fra.speedtest.clouvider.net/backend', down: 'garbage.php', up: 'empty.php', ping: 'empty.php', ip: 'getIP.php' },
 ];
 const MAX_LOG = 5000;      // max rows kept locally
-const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '' };
+const DEFAULTS = { intervalMin: 30, label: '', webhookUrl: '', token: '', routerOn: true, routerUrl: '', lanUrl: '' };
 
 // Common default-gateway addresses, in priority order, probed to auto-detect the router.
 const ROUTER_CANDIDATES = [
@@ -16,11 +16,22 @@ const ROUTER_CANDIDATES = [
 ];
 
 // Overall progress bar layout (percent of the bar each phase fills)
-const PHASES = {
+const PHASES_WAN = {
   prepare:  { from: 0,  to: 12 },
   download: { from: 12, to: 56 },
   upload:   { from: 56, to: 100 },
 };
+// With a LAN test server configured, the LAN phases run first and the bar is re-divided.
+const PHASES_LAN = {
+  prepare:        { from: 0,  to: 8 },
+  'lan-download': { from: 8,  to: 22 },
+  'lan-upload':   { from: 22, to: 36 },
+  download:       { from: 36, to: 68 },
+  upload:         { from: 68, to: 100 },
+};
+let PHASES = PHASES_WAN;
+const LAN_MS = 5000;       // LAN download / upload phase length
+const LAN_WARMUP_MS = 1000;
 
 let running = false;
 
@@ -117,10 +128,10 @@ async function measurePing(s, n = 10) {
 
 // Bytes are only counted after a warm-up period so TCP slow start does not drag the final result down.
 // The live value is the rate over the last second.
-async function measureDownload(s, ms = TEST_MS, streams = 4) {
+async function measureDownload(s, { ms = TEST_MS, warm = WARMUP_MS, streams = 4, phase = 'download', key = 'down', ckSize = 100 } = {}) {
   const ctrl = new AbortController();
   const t0 = performance.now();
-  const warmEnd = t0 + WARMUP_MS;
+  const warmEnd = t0 + warm;
   let bytes = 0, total = 0;
   const hist = [[t0, 0]];
   const ticker = setInterval(() => {
@@ -128,14 +139,13 @@ async function measureDownload(s, ms = TEST_MS, streams = 4) {
     hist.push([now, total]);
     const ref = hist.find(([t]) => t >= now - 1000) || hist[0];
     const dt = (now - ref[0]) / 1000;
-    push({ phase: 'download', pct: phasePct('download', (now - t0) / ms),
-           phaseMs: now - t0, phaseTotalMs: ms, live: dt > 0 ? ((total - ref[1]) * 8) / dt / 1e6 : null,
-           down: dt > 0 ? ((total - ref[1]) * 8) / dt / 1e6 : null });
+    const live = dt > 0 ? ((total - ref[1]) * 8) / dt / 1e6 : null;
+    push({ phase, pct: phasePct(phase, (now - t0) / ms), phaseMs: now - t0, phaseTotalMs: ms, live, [key]: live });
   }, 250);
   const timer = setTimeout(() => ctrl.abort(), ms);
   await Promise.allSettled(Array.from({ length: streams }, async () => {
     while (!ctrl.signal.aborted) {
-      const r = await fetch(`${s.base}/${s.down}?ckSize=100&r=${Math.random()}`, { cache: 'no-store', signal: ctrl.signal });
+      const r = await fetch(`${s.base}/${s.down}?ckSize=${ckSize}&r=${Math.random()}`, { cache: 'no-store', signal: ctrl.signal });
       const reader = r.body.getReader();
       for (;;) {
         const { done, value } = await reader.read();
@@ -167,11 +177,11 @@ function creditedBytes(recs, from, to) {
 
 const UP_MIN = 64_000, UP_MAX = 25_000_000;
 
-async function measureUpload(s, buf, ms = TEST_MS, streams = 4) {
+async function measureUpload(s, buf, { ms = TEST_MS, warm = WARMUP_MS, streams = 4, phase = 'upload', key = 'up' } = {}) {
   const MIN = UP_MIN, MAX = UP_MAX;
   const ctrl = new AbortController();
   const t0 = performance.now();
-  const w0 = t0 + WARMUP_MS;
+  const w0 = t0 + warm;
   const w1 = t0 + ms;
   const hardStop = setTimeout(() => ctrl.abort(), ms + 5000);
   const recs = [];
@@ -180,8 +190,8 @@ async function measureUpload(s, buf, ms = TEST_MS, streams = 4) {
     const now = Math.min(performance.now(), w1);
     const from = Math.max(t0, now - 2000);
     const live = now > from ? (creditedBytes(recs, from, now) * 8) / ((now - from) / 1000) / 1e6 : null;
-    push({ phase: 'upload', pct: phasePct('upload', (performance.now() - t0) / ms),
-           phaseMs: Math.min(performance.now() - t0, ms), phaseTotalMs: ms, live, up: live });
+    push({ phase, pct: phasePct(phase, (performance.now() - t0) / ms),
+           phaseMs: Math.min(performance.now() - t0, ms), phaseTotalMs: ms, live, [key]: live });
   }, 250);
   await Promise.allSettled(Array.from({ length: streams }, async () => {
     while (performance.now() < w1 && !ctrl.signal.aborted) {
@@ -202,6 +212,33 @@ async function measureUpload(s, buf, ms = TEST_MS, streams = 4) {
   const credited = creditedBytes(recs, w0, w1);
   if (credited === 0) throw new Error('upload failed');
   return (credited * 8) / ((w1 - w0) / 1000) / 1e6;
+}
+
+// ---------- LAN measurement ----------
+// Same measurement code as the WAN test, pointed at the LAN speed server (lan-server/server.js)
+// running on another device in the home network. Shows what the home network itself can carry.
+
+function normalizeLanUrl(u) {
+  u = (u || '').trim().replace(/\/+$/, '');
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+  if (!/:\d+$/.test(u.replace(/^https?:\/\//i, ''))) u += ':8787';
+  return u;
+}
+
+async function measureLan(base, uploadBuf, monitor) {
+  const lan = { base, down: 'garbage.php', up: 'empty.php', ping: 'empty.php', ip: 'getIP.php' };
+  const out = { lanDown: null, lanUp: null, lanPing: null };
+  const r = await fetch(`${base}/${lan.ip}?r=${Math.random()}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+  if (!r.ok) throw new Error('LAN server answered with an error');
+  monitor?.setPhase('lan');
+  out.lanPing = +(await measurePing(lan, 8)).toFixed(1);
+  push({ lanPing: out.lanPing });
+  out.lanDown = +(await measureDownload(lan, { ms: LAN_MS, warm: LAN_WARMUP_MS, phase: 'lan-download', key: 'lanDown', ckSize: 200 })).toFixed(1);
+  push({ lanDown: out.lanDown, live: null }, true);
+  out.lanUp = +(await measureUpload(lan, uploadBuf, { ms: LAN_MS, warm: LAN_WARMUP_MS, phase: 'lan-upload', key: 'lanUp' })).toFixed(1);
+  push({ lanUp: out.lanUp, live: null }, true);
+  return out;
 }
 
 // ---------- router (home network) monitor ----------
@@ -284,11 +321,12 @@ function summarizeRouter(samples) {
   const idle = ok('idle');
   const down = ok('download');
   const up = ok('upload');
+  const lanS = ok('lan');
   const loaded = samples.filter((s) => s.phase !== 'idle');
-  const allOk = [...idle, ...down, ...up];
+  const allOk = [...idle, ...down, ...up, ...lanS];
   const r1 = (v) => (v === null ? null : +v.toFixed(1));
   if (!allOk.length) {
-    return { routerIdle: null, routerDown: null, routerUp: null, routerMax: null, routerLoss: null, routerStatus: 'unreachable' };
+    return { routerIdle: null, routerDown: null, routerUp: null, routerLan: null, routerMax: null, routerLoss: null, routerStatus: 'unreachable' };
   }
   const lossBase = loaded.length ? loaded : samples;
   const loss = (lossBase.filter((s) => s.rtt === null).length / lossBase.length) * 100;
@@ -299,7 +337,8 @@ function summarizeRouter(samples) {
     routerIdle: r1(idleMed),
     routerDown: r1(mean(down)),
     routerUp: r1(mean(up)),
-    routerMax: r1(Math.max(...[...down, ...up, ...idle])),
+    routerLan: r1(mean(lanS)),
+    routerMax: r1(Math.max(...[...down, ...up, ...idle, ...lanS])),
     routerLoss: +loss.toFixed(1),
     routerStatus: degraded ? 'degraded' : 'ok',
   };
@@ -339,8 +378,11 @@ async function runTest() {
   const row = {
     time: new Date().toISOString(), label: s.label, ip: '', server: '',
     down: null, up: null, ping: null, status: 'ok',
-    routerIdle: null, routerDown: null, routerUp: null, routerMax: null, routerLoss: null, routerStatus: 'off', routerAddr: '',
+    routerIdle: null, routerDown: null, routerUp: null, routerLan: null, routerMax: null, routerLoss: null, routerStatus: 'off', routerAddr: '',
+    lanStatus: 'off', lanServer: '', lanDown: null, lanUp: null, lanPing: null,
   };
+  const lanBase = normalizeLanUrl(s.lanUrl);
+  PHASES = lanBase ? PHASES_LAN : PHASES_WAN;
 
   // Build the upload payload up front: generating 25 MB of random data stalls the worker for a moment,
   // which would otherwise show up as a fake latency spike in the router samples.
@@ -360,13 +402,27 @@ async function runTest() {
       row.routerStatus = 'not found';
     }
   }
-  push({ routerEnabled: !!monitor, routerUrl: monitor ? routerUrl : '', detecting: false }, true);
+  push({ routerEnabled: !!monitor, routerUrl: monitor ? routerUrl : '', detecting: false, lanEnabled: !!lanBase,
+         lanDown: null, lanUp: null, lanPing: null }, true);
+
+  // LAN test first, so it runs on a quiet line and the WAN numbers are not disturbed by it.
+  if (lanBase) {
+    row.lanServer = new URL(lanBase).host;
+    try {
+      Object.assign(row, await measureLan(lanBase, uploadBuf, monitor));
+      row.lanStatus = 'ok';
+    } catch (e) {
+      row.lanStatus = 'unreachable';
+      push({ lanFailed: true }, true);
+    }
+    monitor?.setPhase('idle');
+  }
 
   try {
-    push({ phase: 'prepare', pct: 4 }, true);
+    push({ phase: 'prepare', pct: lanBase ? PHASES.download.from : 4 }, true);
     const srv = await pickServer();
     row.ip = srv.ipAddr; row.server = srv.name;
-    push({ pct: 8, server: srv.name, ip: srv.ipAddr }, true);
+    push({ pct: lanBase ? PHASES.download.from : 8, server: srv.name, ip: srv.ipAddr }, true);
     row.ping = +(await measurePing(srv)).toFixed(1);
     push({ ping: row.ping, pct: PHASES.download.from }, true);
 

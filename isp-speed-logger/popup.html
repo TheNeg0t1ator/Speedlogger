@@ -157,6 +157,9 @@
     .badge.unreachable { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
     .router .detail { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 0; }
     .router .detail b { color: var(--text); font-weight: 600; }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+    .steps span[hidden] { display: none; }
+    .router[hidden] { display: none; }
     .hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
 
     .pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: pulse 1.1s ease-in-out infinite; }
@@ -190,12 +193,16 @@
   <section class="progress" id="progress" hidden aria-live="polite">
     <div class="top"><span id="p-label">Starting…</span><span class="t" id="p-time"></span></div>
     <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="p-fill"></i></div>
-    <div class="steps"><span id="st-prepare">Latency</span><span id="st-download">Download</span><span id="st-upload">Upload</span></div>
+    <div class="steps"><span id="st-prepare">Latency</span><span id="st-lan" hidden>LAN</span><span id="st-download">Download</span><span id="st-upload">Upload</span></div>
   </section>
 
   <section class="router" id="router" aria-label="Router (home network)">
     <span class="badge" id="r-badge">Router off</span>
     <span class="detail" id="r-detail"></span>
+  </section>
+  <section class="router" id="lan" hidden aria-label="LAN speed (home network)">
+    <span class="badge" id="l-badge">LAN</span>
+    <span class="detail" id="l-detail"></span>
   </section>
   <div class="meta" id="status"></div>
 
@@ -225,6 +232,10 @@
           <button type="button" class="btn sm" id="detect">Detect</button>
         </span>
       </label>
+      <label>LAN test server <span class="count">(optional)</span>
+        <small>Measures real speed inside your home network. Run <code>node lan-server/server.js</code> on another device (PC, Raspberry Pi, NAS) and enter the address it prints, e.g. 192.168.0.50:8787</small>
+        <input id="lan-url" placeholder="192.168.0.50:8787">
+      </label>
       <label>Google Sheet webhook URL <span class="count">(optional)</span>
         <input id="webhook" placeholder="https://script.google.com/macros/s/…/exec">
       </label>
@@ -244,7 +255,7 @@
       <div class="toolbar"><button class="btn sm danger" id="clear">Clear</button></div>
     </div>
     <table>
-      <thead><tr><th>Time</th><th>Down</th><th>Up</th><th>Ping</th><th>Router</th></tr></thead>
+      <thead><tr><th>Time</th><th>Down</th><th>Up</th><th>Ping</th><th>Router</th><th>LAN ↓/↑</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="empty" hidden>No results yet. Run a test to get started.</div>
