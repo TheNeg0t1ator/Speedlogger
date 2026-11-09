@@ -52,7 +52,7 @@ async function schedule() {
 chrome.runtime.onInstalled.addListener(schedule);
 chrome.runtime.onStartup.addListener(schedule);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings) schedule();
+  if (area === 'local' && changes.settings) { schedule(); flushPending(); }
 });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'speedtest') runTest(); });
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -62,6 +62,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'detectRouter') {
     detectRouter(true).then((url) => sendResponse({ url }));
+    return true;
+  }
+  if (msg.type === 'flush') {
+    flushPending().then(() => sendResponse({ done: true }));
     return true;
   }
 });
@@ -254,7 +258,9 @@ function normalizeRouterUrl(u) {
   return u;
 }
 
-async function routerProbe(url, timeoutMs = 2000) {
+// strict: only a real HTTP response counts (used for detection, so a fast "unreachable" error from some
+// other router is not mistaken for our router). Non-strict also accepts a refused/reset connection.
+async function routerProbe(url, timeoutMs = 2000, strict = false) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const t0 = performance.now();
@@ -266,7 +272,9 @@ async function routerProbe(url, timeoutMs = 2000) {
     try { await r.body?.cancel(); } catch (_) { /* ignore */ }
     return ms;
   } catch (_) {
-    return null; // timeout or unreachable
+    // Timeout = no answer. Otherwise the connection was refused/reset (e.g. router has no web interface):
+    // the router still answered the TCP handshake, so the elapsed time is a valid round-trip measurement.
+    return strict || ctrl.signal.aborted ? null : performance.now() - t0;
   } finally {
     clearTimeout(timer);
   }
@@ -280,7 +288,7 @@ async function detectRouter(force = false) {
     const { routerCache } = await chrome.storage.local.get('routerCache');
     if (routerCache?.url) return routerCache.url;
   }
-  const probes = ROUTER_CANDIDATES.map((ip) => routerProbe(`http://${ip}/`, 1500));
+  const probes = ROUTER_CANDIDATES.map((ip) => routerProbe(`http://${ip}/`, 1500, true));
   for (let i = 0; i < probes.length; i++) {
     if ((await probes[i]) !== null) {
       const url = `http://${ROUTER_CANDIDATES[i]}/`;
@@ -357,10 +365,15 @@ async function flushPending() {
         headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // avoids CORS preflight
         body: JSON.stringify({ token: s.token, ...pending[0] }),
       });
-      const j = await r.json();
+      const body = await r.text();
+      let j;
+      try { j = JSON.parse(body); }
+      catch (_) { throw new Error(`HTTP ${r.status}, reply was not JSON (check deployment access = Anyone, and use the /exec URL)`); }
       if (!j.ok) throw new Error(j.error || 'rejected');
       pending.shift();
+      await chrome.storage.local.set({ lastError: '' });
     } catch (e) {
+      await chrome.storage.local.set({ lastError: String((e && e.message) || e) });
       break; // offline or error: keep the rest and retry on the next run
     }
   }
