@@ -40,21 +40,65 @@ async function getSettings() {
   return { ...DEFAULTS, ...settings };
 }
 
+// Master on/off switch (stored separately from the settings so saving settings never flips it).
+async function isEnabled() {
+  const { enabled } = await chrome.storage.local.get('enabled');
+  return enabled !== false;
+}
+
 async function schedule() {
   const s = await getSettings();
   await chrome.alarms.clear('speedtest');
+  if (!(await isEnabled())) return; // switched off: no scheduled tests
   chrome.alarms.create('speedtest', {
     delayInMinutes: 1,
     periodInMinutes: Math.max(1, Number(s.intervalMin) || 30),
   });
 }
 
-chrome.runtime.onInstalled.addListener(schedule);
-chrome.runtime.onStartup.addListener(schedule);
+// ---------- toolbar icon: green = on, red = off, spinning rainbow = testing ----------
+
+let iconTimer = null;
+const FRAMES = 8;
+
+const iconPaths = (name) => ({ 16: `icons/${name}-16.png`, 32: `icons/${name}-32.png`, 48: `icons/${name}-48.png`, 128: `icons/${name}-128.png` });
+
+function setIconState(name) {
+  chrome.action.setIcon({ path: iconPaths(name) }).catch((e) => console.error('setIcon failed', e));
+  chrome.action.setBadgeText({ text: '' }).catch(() => {}); // no badge, the icon colour is the indicator
+}
+
+async function refreshIcon() {
+  const on = await isEnabled();
+  chrome.action.setTitle({ title: `ISP Speed Logger (${running ? 'testing' : on ? 'on' : 'off'})` }).catch(() => {});
+  if (running) {
+    if (!iconTimer) {
+      let f = 0;
+      const tick = () => {
+        setIconState(`test${f}`);
+        f = (f + 1) % FRAMES;
+      };
+      tick();
+      iconTimer = setInterval(tick, 250);
+    }
+    return;
+  }
+  if (iconTimer) { clearInterval(iconTimer); iconTimer = null; }
+  setIconState(on ? 'on' : 'off');
+}
+
+refreshIcon(); // every time the service worker starts
+
+chrome.runtime.onInstalled.addListener(() => { schedule(); refreshIcon(); });
+chrome.runtime.onStartup.addListener(() => { schedule(); refreshIcon(); });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings) { schedule(); flushPending(); }
+  if (area !== 'local') return;
+  if (changes.settings) { schedule(); flushPending(); }
+  if (changes.enabled) { schedule(); refreshIcon(); }
 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'speedtest') runTest(); });
+chrome.alarms.onAlarm.addListener(async (a) => {
+  if (a.name === 'speedtest' && (await isEnabled())) runTest();
+});
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'runNow') {
     runTest().then(() => sendResponse({ done: true }));
@@ -383,6 +427,7 @@ async function flushPending() {
 async function runTest() {
   if (running) return;
   running = true;
+  refreshIcon();
   await chrome.storage.local.set({ running: true });
   for (const k of Object.keys(prog)) delete prog[k];
   push({ phase: 'prepare', pct: 2, startedAt: Date.now(), down: null, up: null, ping: null, router: null, live: null }, true);
@@ -464,6 +509,7 @@ async function runTest() {
   await flushPending();
 
   running = false;
+  refreshIcon();
   try { await chrome.storage.session.remove('progress'); } catch (_) { /* ignore */ }
   await chrome.storage.local.set({ running: false });
 }

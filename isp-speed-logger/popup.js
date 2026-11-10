@@ -17,6 +17,23 @@ $('theme').onclick = async () => {
   await chrome.storage.local.set({ theme: themePref });
 };
 
+// ---------- on/off switch ----------
+let enabled = true;
+
+function applyPower() {
+  const sw = $('power');
+  sw.setAttribute('aria-checked', String(enabled));
+  $('power-label').textContent = enabled ? 'On' : 'Off';
+  // logo: rainbow while testing, otherwise green (on) / red (off)
+  $('logo').className = 'logo ' + (lastRunning ? 'testing' : enabled ? 'on' : 'off');
+}
+
+$('power').onclick = async () => {
+  enabled = !enabled;
+  applyPower();
+  await chrome.storage.local.set({ enabled }); // background reschedules / recolours the toolbar icon
+};
+
 // ---------- settings ----------
 let settings = { ...DEFAULTS };
 
@@ -200,9 +217,11 @@ function renderStats(running, p) {
 }
 
 async function render() {
-  const { log = [], running, pending = [], lastError } = await chrome.storage.local.get(['log', 'running', 'pending', 'lastError']);
+  const { log = [], running, pending = [], lastError, enabled: en } = await chrome.storage.local.get(['log', 'running', 'pending', 'lastError', 'enabled']);
   const { progress } = await chrome.storage.session.get('progress').catch(() => ({}));
   lastLog = log; lastRunning = !!running; lastProgress = progress || null;
+  enabled = en !== false;
+  applyPower();
 
   renderStats(lastRunning, lastProgress);
   renderProgress(lastProgress, lastRunning);
@@ -238,6 +257,8 @@ async function render() {
   st.textContent = '';
   if (!lastRunning && pending.length) {
     st.textContent = `${pending.length} result${pending.length > 1 ? 's' : ''} waiting to upload to the sheet` + (lastError ? ` (${lastError})` : '');
+  } else if (!lastRunning && !enabled) {
+    st.textContent = 'Automatic tests are off. "Run test now" still works.';
   }
 }
 
